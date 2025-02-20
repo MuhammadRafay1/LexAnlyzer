@@ -6,7 +6,7 @@ public class Main {
         try {
             SymbolTable symbolTable = new SymbolTable();
             ErrorHandler errorHandler = new ErrorHandler();
-            Lexer lexer = new Lexer("test.sui", symbolTable, errorHandler);
+            Lexer lexer = new Lexer("/home/tabish/Desktop/Compiler Construction/LexAnlyzer/test.sui", symbolTable, errorHandler);
             
             System.out.println("DFA State Count: " + lexer.dfa.states.size());
             

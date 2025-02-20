@@ -14,6 +14,7 @@ class State {
         this.id = nextId++;
     }
 
+    @SuppressWarnings("unused")
     public void addTransition(char symbol, State state) {
         transitions.computeIfAbsent(symbol, k -> new HashSet<>()).add(state);
     }

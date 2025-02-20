@@ -1,4 +1,3 @@
-// Lexer.java
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -22,107 +21,83 @@ public class Lexer {
         this.line = 1;
     }
 
+   
     private DFA buildDFA() {
         Map<String, String> tokenSpecs = new LinkedHashMap<>() {{
             // Order matters - more specific patterns first
-            put("WHITESPACE", "[ \t\r\n]");
+            put("WHITESPACE", "[ \t\r\n]+");
             put("MULTI_LINE_COMMENT", "%\\*");
             put("SINGLE_LINE_COMMENT", "%%");
-            // Place IDENTIFIER before KEYWORD to ensure proper matching
+            // Match operators before numbers to avoid conflicts
+            put("OPERATOR", "[\\^\\+\\-\\*/%]");  // Escape ^ and put it first
+            put("ASSIGNMENT", "=");
+            // Match decimals before integers
+            put("DECIMAL", "[0-9]+[.][0-9]+");
+            put("INTEGER", "[0-9]+");
+            put("CHAR", "'[^']'");  // Single character enclosed in single quotes
+            put("BOOLEAN", "true|false");
             put("IDENTIFIER", "[a-zA-Z][a-zA-Z0-9]*|_[a-zA-Z0-9]+");
             put("KEYWORD", "int|dec|bln|char|mrWorld|mrArea");
-            put("BOOLEAN", "true|false");
-            put("DECIMAL", "[0-9]+\\.[0-9]+");
-            put("INTEGER", "[0-9]+");
-            put("OPERATOR", "[+\\-*/%^]");
-            put("ASSIGNMENT", "=");
         }};
         return convertToDFA(buildCombinedNFA(tokenSpecs));
     }
-
-    
 
     private NFA parseRegex(String pattern) {
         if (pattern.isEmpty()) {
             return new NFA(new State(), new State());
         }
 
+        if (pattern.endsWith("+")) {
+            String basePart = pattern.substring(0, pattern.length() - 1);
+            NFA baseNFA = parseRegex(basePart);
+            return NFA.concat(baseNFA, NFA.kleeneStar(baseNFA));
+        }
+
         if (pattern.startsWith("[") && pattern.endsWith("]")) {
-            // Handle character class
             String chars = pattern.substring(1, pattern.length() - 1);
             return parseCharacterClass(chars);
         }
 
-        List<NFA> alternatives = new ArrayList<>();
-        StringBuilder current = new StringBuilder();
-        
-        for (int i = 0; i < pattern.length(); i++) {
-            char c = pattern.charAt(i);
-            
-            if (c == '\\' && i + 1 < pattern.length()) {
-                char nextChar = pattern.charAt(++i);
-                if (nextChar == '.') {
-                    if (current.length() > 0) {
-                        alternatives.add(parseSimplePattern(current.toString()));
-                        current.setLength(0);
-                    }
-                    alternatives.add(NFA.fromChar('.'));
-                } else {
-                    current.append(nextChar);
-                }
-                continue;
+        String[] alternatives = pattern.split("\\|");
+        if (alternatives.length > 1) {
+            List<NFA> nfas = new ArrayList<>();
+            for (String alt : alternatives) {
+                nfas.add(parseSimplePattern(alt));
             }
-            
-            if (c == '|') {
-                if (current.length() > 0) {
-                    alternatives.add(parseSimplePattern(current.toString()));
-                    current.setLength(0);
-                }
-                continue;
+            NFA result = nfas.get(0);
+            for (int i = 1; i < nfas.size(); i++) {
+                result = NFA.alternate(result, nfas.get(i));
             }
-            
-            if (c == '[') {
-                int closeBracket = findClosingBracket(pattern, i);
-                if (closeBracket != -1) {
-                    if (current.length() > 0) {
-                        alternatives.add(parseSimplePattern(current.toString()));
-                        current.setLength(0);
-                    }
-                    alternatives.add(parseCharacterClass(pattern.substring(i + 1, closeBracket)));
-                    i = closeBracket;
-                    continue;
-                }
-            }
-            
-            if (c == '*' || c == '+') {
-                if (current.length() > 0) {
-                    NFA base = parseSimplePattern(current.toString());
-                    alternatives.add(c == '*' ? NFA.kleeneStar(base) : 
-                                              NFA.concat(base, NFA.kleeneStar(base)));
-                    current.setLength(0);
-                    continue;
-                }
-            }
-            
-            current.append(c);
+            return result;
         }
-        
-        if (current.length() > 0) {
-            alternatives.add(parseSimplePattern(current.toString()));
-        }
-        
-        if (alternatives.isEmpty()) {
-            return new NFA(new State(), new State());
-        }
-        
-        NFA result = alternatives.get(0);
-        for (int i = 1; i < alternatives.size(); i++) {
-            result = NFA.alternate(result, alternatives.get(i));
-        }
-        
-        return result;
+
+        return parseSimplePattern(pattern);
     }
 
+    private NFA parseCharacterClass(String chars) {
+        List<NFA> nfas = new ArrayList<>();
+        
+        for (int i = 0; i < chars.length(); i++) {
+            if (chars.charAt(i) == '\\' && i + 1 < chars.length()) {
+                nfas.add(NFA.fromChar(chars.charAt(++i)));
+                continue;
+            }
+            
+            if (i + 2 < chars.length() && chars.charAt(i + 1) == '-') {
+                nfas.add(NFA.range(chars.charAt(i), chars.charAt(i + 2)));
+                i += 2;
+                continue;
+            }
+            
+            nfas.add(NFA.fromChar(chars.charAt(i)));
+        }
+        
+        NFA result = nfas.get(0);
+        for (int i = 1; i < nfas.size(); i++) {
+            result = NFA.alternate(result, nfas.get(i));
+        }
+        return result;
+    }
     private NFA parseSimplePattern(String pattern) {
         NFA result = null;
         for (int i = 0; i < pattern.length(); i++) {
@@ -132,21 +107,6 @@ public class Lexer {
         return result;
     }
 
-    private NFA parseCharacterClass(String chars) {
-        if (chars.contains("-")) {
-            char start = chars.charAt(0);
-            char end = chars.charAt(2);
-            return NFA.range(start, end);
-        }
-        
-        NFA result = null;
-        for (char c : chars.toCharArray()) {
-            if (c == '\\') continue;  // Skip escape character
-            NFA charNFA = NFA.fromChar(c);
-            result = (result == null) ? charNFA : NFA.alternate(result, charNFA);
-        }
-        return result;
-    }
 
     private NFA buildCombinedNFA(Map<String, String> tokenSpecs) {
         List<NFA> nfas = new ArrayList<>();
@@ -196,6 +156,7 @@ public class Lexer {
         return dfa;
     }
 
+    // Main tokenization method
     public List<Token> tokenize() {
         List<Token> tokens = new ArrayList<>();
         while (pos < input.length()) {
@@ -219,6 +180,14 @@ public class Lexer {
                     case DECIMAL:
                         symbolTable.addEntry(token.getValue(), "decimal", "local");
                         break;
+                    case CHAR:
+                        symbolTable.addEntry(token.getValue(), "char", "local");
+                        break;
+                    case BOOLEAN:
+                        symbolTable.addEntry(token.getValue(), "boolean", "local");
+                        break;
+                    default:
+                        break;
                 }
             }
         }
@@ -235,6 +204,7 @@ public class Lexer {
         return -1;
     }
 
+    // Tokenization logic, including assignments and decimal numbers
     private Token nextToken() {
         while (pos < input.length()) {
             // Skip whitespace
@@ -276,16 +246,27 @@ public class Lexer {
             if (lastAcceptState != null) {
                 String lexeme = input.substring(start, lastAcceptPos);
                 pos = lastAcceptPos;
-                
+
                 // Skip whitespace tokens
                 if (lastAcceptState.tokenType.equals("WHITESPACE")) continue;
-                
+
                 // Check for keywords
                 if (lastAcceptState.tokenType.equals("IDENTIFIER") && isKeyword(lexeme)) {
                     return new Token(Token.TokenType.KEYWORD, lexeme, line);
                 }
-                
-                return new Token(Token.TokenType.valueOf(lastAcceptState.tokenType), lexeme, line);
+
+                Token.TokenType type = Token.TokenType.valueOf(lastAcceptState.tokenType);
+
+                // Update symbol table
+                if (type == Token.TokenType.INTEGER) {
+                    symbolTable.addEntry(lexeme, "integer", "local");
+                } else if (type == Token.TokenType.DECIMAL) {
+                    symbolTable.addEntry(lexeme, "decimal", "local");
+                } else if (type == Token.TokenType.IDENTIFIER) {
+                    symbolTable.addEntry(lexeme, "identifier", "local");
+                }
+
+                return new Token(type, lexeme, line);
             }
             
             // Handle unrecognized characters
@@ -295,7 +276,6 @@ public class Lexer {
         
         return null;
     }
-
     private boolean isKeyword(String lexeme) {
         return lexeme.matches("int|dec|bln|char|mrWorld|mrArea");
     }

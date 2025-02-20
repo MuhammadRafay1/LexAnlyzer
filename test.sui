@@ -1,5 +1,2 @@
-int x = 10
-dec y = 3.14
-mrWorld z = true
+int z=10
 %* Multi-line comment *%
-x + y ^ 2
