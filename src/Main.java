@@ -7,24 +7,15 @@ public class Main {
             SymbolTable symbolTable = new SymbolTable();
             ErrorHandler errorHandler = new ErrorHandler();
             Lexer lexer = new Lexer("test.sui", symbolTable, errorHandler);
+            
+            System.out.println("DFA State Count: " + lexer.dfa.states.size());
+            
             List<Token> tokens = lexer.tokenize();
 
-            // Print tokens
-            for (Token token : tokens) {
-                System.out.println(token);
-            }
-
-            // Print errors
-            if (errorHandler.hasErrors()) {
-                System.out.println("\nErrors:");
-                errorHandler.getErrors().forEach(System.out::println);
-            }
-
-            System.out.println("Symbol Table:");
-                for (String name : symbolTable.table.keySet()) {
-                    SymbolTable.Entry entry = symbolTable.getEntry(name);
-                    System.out.println(name + " -> Type: " + entry.type + ", Scope: " + entry.scope);
-                }
+            tokens.forEach(System.out::println);
+            errorHandler.getErrors().forEach(System.out::println);
+            symbolTable.table.forEach((k,v) -> 
+                System.out.println(k + " -> " + v.type + " (" + v.scope + ")"));
 
         } catch (IOException e) {
             e.printStackTrace();

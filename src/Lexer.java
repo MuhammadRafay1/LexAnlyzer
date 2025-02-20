@@ -1,170 +1,352 @@
-import java.io.BufferedReader;
-import java.io.FileReader;
+// Lexer.java
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.*;
 
 public class Lexer {
-    private BufferedReader reader;
-    private int currentLine = 1;
-    private ErrorHandler errorHandler;
-    private SymbolTable symbolTable;
+    public final DFA dfa;
+    private final SymbolTable symbolTable;
+    private final ErrorHandler errorHandler;
+    private String input;
+    private int pos;
+    private int line;
+    private boolean inMultiLineComment = false;
 
-    // Reserved keywords
-    private static final String[] KEYWORDS = {
-        "int", "dec", "bln", "char", "mrWorld", "mrArea" , "true", "false"
-    };
+    public Lexer(String filePath, SymbolTable symbolTable, ErrorHandler errorHandler) throws IOException {
+        this.symbolTable = symbolTable;
+        this.errorHandler = errorHandler;
+        this.input = new String(Files.readAllBytes(Paths.get(filePath)));
+        this.dfa = buildDFA();
+        this.pos = 0;
+        this.line = 1;
+    }
+
+    private DFA buildDFA() {
+        Map<String, String> tokenSpecs = new LinkedHashMap<>() {{
+            // Order matters - more specific patterns first
+            put("WHITESPACE", "[ \t\r\n]");
+            put("MULTI_LINE_COMMENT", "%\\*");
+            put("SINGLE_LINE_COMMENT", "%%");
+            // Place IDENTIFIER before KEYWORD to ensure proper matching
+            put("IDENTIFIER", "[a-zA-Z][a-zA-Z0-9]*|_[a-zA-Z0-9]+");
+            put("KEYWORD", "int|dec|bln|char|mrWorld|mrArea");
+            put("BOOLEAN", "true|false");
+            put("DECIMAL", "[0-9]+\\.[0-9]+");
+            put("INTEGER", "[0-9]+");
+            put("OPERATOR", "[+\\-*/%^]");
+            put("ASSIGNMENT", "=");
+        }};
+        return convertToDFA(buildCombinedNFA(tokenSpecs));
+    }
 
     
 
-    public Lexer(String filePath, SymbolTable symbolTable, ErrorHandler errorHandler) throws IOException {
-        this.reader = new BufferedReader(new FileReader(filePath));
-        this.errorHandler = errorHandler;
-        this.symbolTable = symbolTable;
-    }
-
-    public List<Token> tokenize() throws IOException {
-        List<Token> tokens = new ArrayList<>();
-        String line;
-        while ((line = reader.readLine()) != null) {
-            tokens.addAll(processLine(line));
-            currentLine++;
+    private NFA parseRegex(String pattern) {
+        if (pattern.isEmpty()) {
+            return new NFA(new State(), new State());
         }
-        reader.close();
-        return tokens;
-    }
 
-    private List<Token> processLine(String line) {
-        List<Token> tokens = new ArrayList<>();
-        int pos = 0;
-        while (pos < line.length()) {
-            char ch = line.charAt(pos);
-            if (Character.isWhitespace(ch)) {
-                pos++; // Skip whitespace
-            } else if (isCommentStart(line, pos)) {
-                pos = processComment(line, pos, tokens);
-            } else if (Character.isLetter(ch)) {
-                pos = processIdentifierOrKeyword(line, pos, tokens);
-            } else if (Character.isDigit(ch) || ch == '.') {
-                pos = processNumber(line, pos, tokens);
-            } else if (isOperator(ch)) {
-                tokens.add(new Token(Token.TokenType.OPERATOR, String.valueOf(ch), currentLine));
-                pos++;
-            } else if (ch == '\'') {
-                pos = processCharacter(line, pos, tokens);
-            } else if (ch == '=') {
-                pos = processAssignment(line, pos, tokens);
-            } 
-            else {
-                errorHandler.logError(currentLine, "Illegal character: " + ch);
-                pos++;
-            }
+        if (pattern.startsWith("[") && pattern.endsWith("]")) {
+            // Handle character class
+            String chars = pattern.substring(1, pattern.length() - 1);
+            return parseCharacterClass(chars);
         }
-        return tokens;
-    }
 
-    private int processIdentifierOrKeyword(String line, int pos, List<Token> tokens) {
-        int start = pos;
-        while (pos < line.length() && (Character.isLetterOrDigit(line.charAt(pos)) || line.charAt(pos) == '_')) {
-            pos++;
-        }
-        String word = line.substring(start, pos);
+        List<NFA> alternatives = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
         
-        if (isKeyword(word) && word != "mrWorld") {
-            tokens.add(new Token(Token.TokenType.KEYWORD, word, currentLine));
-            if (symbolTable.getEntry(word) == null) { 
-                symbolTable.addEntry(word, "Reserved", "local");
-            }
-        } else if (word == "mrWorld") {
-            tokens.add(new Token(Token.TokenType.KEYWORD, word, currentLine));
-            if (symbolTable.getEntry(word) == null) { 
-                symbolTable.addEntry(word, "Reserved", "Global");
-            }
-        } else {
-            if (symbolTable.getEntry(word) == null) { 
-                symbolTable.addEntry(word, "Identifier", "local");
-            }
-            tokens.add(new Token(Token.TokenType.IDENTIFIER, word, currentLine));
-        }
-        
-        return pos;
-    }
-
-    private int processAssignment(String line, int pos, List<Token> tokens) {
-        if (pos + 1 < line.length() && line.charAt(pos + 1) == '=') {
-            tokens.add(new Token(Token.TokenType.OPERATOR, "==", currentLine));
-            return pos + 2; // Move past '=='
-        } else {
-            tokens.add(new Token(Token.TokenType.ASSIGNMENT, "=", currentLine));
-            return pos + 1; // Move past '='
-        }
-    }    
-
-    private boolean isCommentStart(String line, int pos) {
-        return line.startsWith("%%", pos) || line.startsWith("%*", pos);
-    }
-
-    private int processComment(String line, int pos, List<Token> tokens) {
-        if (line.startsWith("%%", pos)) {
-            // Single-line comment
-            String comment = line.substring(pos);
-            tokens.add(new Token(Token.TokenType.SINGLE_LINE_COMMENT, comment, currentLine));
-            return line.length(); // Move to the end of the line
-        } else if (line.startsWith("%*", pos)) {
-            int endPos = line.indexOf("*%", pos + 2);
-            if (endPos == -1) {
-                errorHandler.logError(currentLine, "Unterminated multi-line comment");
-                return line.length();
-            }
-            String comment = line.substring(pos, endPos + 2);
-            tokens.add(new Token(Token.TokenType.MULTI_LINE_COMMENT, comment, currentLine));
-            return endPos + 2;
-        }
-        return pos;
-    }
-
-    private boolean isKeyword(String word) {
-        for (String keyword : KEYWORDS) {
-            if (keyword.equals(word)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private int processNumber(String line, int pos, List<Token> tokens) {
-        int start = pos;
-        boolean hasDecimal = false;
-        while (pos < line.length() && (Character.isDigit(line.charAt(pos)) || line.charAt(pos) == '.')) {
-            if (line.charAt(pos) == '.') {
-                if (hasDecimal) {
-                    errorHandler.logError(currentLine, "Invalid number format: multiple decimal points");
-                    break;
+        for (int i = 0; i < pattern.length(); i++) {
+            char c = pattern.charAt(i);
+            
+            if (c == '\\' && i + 1 < pattern.length()) {
+                char nextChar = pattern.charAt(++i);
+                if (nextChar == '.') {
+                    if (current.length() > 0) {
+                        alternatives.add(parseSimplePattern(current.toString()));
+                        current.setLength(0);
+                    }
+                    alternatives.add(NFA.fromChar('.'));
+                } else {
+                    current.append(nextChar);
                 }
-                hasDecimal = true;
+                continue;
+            }
+            
+            if (c == '|') {
+                if (current.length() > 0) {
+                    alternatives.add(parseSimplePattern(current.toString()));
+                    current.setLength(0);
+                }
+                continue;
+            }
+            
+            if (c == '[') {
+                int closeBracket = findClosingBracket(pattern, i);
+                if (closeBracket != -1) {
+                    if (current.length() > 0) {
+                        alternatives.add(parseSimplePattern(current.toString()));
+                        current.setLength(0);
+                    }
+                    alternatives.add(parseCharacterClass(pattern.substring(i + 1, closeBracket)));
+                    i = closeBracket;
+                    continue;
+                }
+            }
+            
+            if (c == '*' || c == '+') {
+                if (current.length() > 0) {
+                    NFA base = parseSimplePattern(current.toString());
+                    alternatives.add(c == '*' ? NFA.kleeneStar(base) : 
+                                              NFA.concat(base, NFA.kleeneStar(base)));
+                    current.setLength(0);
+                    continue;
+                }
+            }
+            
+            current.append(c);
+        }
+        
+        if (current.length() > 0) {
+            alternatives.add(parseSimplePattern(current.toString()));
+        }
+        
+        if (alternatives.isEmpty()) {
+            return new NFA(new State(), new State());
+        }
+        
+        NFA result = alternatives.get(0);
+        for (int i = 1; i < alternatives.size(); i++) {
+            result = NFA.alternate(result, alternatives.get(i));
+        }
+        
+        return result;
+    }
+
+    private NFA parseSimplePattern(String pattern) {
+        NFA result = null;
+        for (int i = 0; i < pattern.length(); i++) {
+            NFA charNFA = NFA.fromChar(pattern.charAt(i));
+            result = (result == null) ? charNFA : NFA.concat(result, charNFA);
+        }
+        return result;
+    }
+
+    private NFA parseCharacterClass(String chars) {
+        if (chars.contains("-")) {
+            char start = chars.charAt(0);
+            char end = chars.charAt(2);
+            return NFA.range(start, end);
+        }
+        
+        NFA result = null;
+        for (char c : chars.toCharArray()) {
+            if (c == '\\') continue;  // Skip escape character
+            NFA charNFA = NFA.fromChar(c);
+            result = (result == null) ? charNFA : NFA.alternate(result, charNFA);
+        }
+        return result;
+    }
+
+    private NFA buildCombinedNFA(Map<String, String> tokenSpecs) {
+        List<NFA> nfas = new ArrayList<>();
+        for (Map.Entry<String, String> entry : tokenSpecs.entrySet()) {
+            NFA nfa = parseRegex(entry.getValue());
+            nfa.accept.tokenType = entry.getKey();
+            nfas.add(nfa);
+        }
+        
+        // Combine all NFAs with alternation
+        NFA combined = nfas.get(0);
+        for (int i = 1; i < nfas.size(); i++) {
+            combined = NFA.alternate(combined, nfas.get(i));
+        }
+        return combined;
+    }
+
+    private DFA convertToDFA(NFA nfa) {
+        DFA dfa = new DFA();
+        Set<State> initial = epsilonClosure(Collections.singleton(nfa.start));
+        dfa.startState = new DFAState(initial);
+        dfa.states.add(dfa.startState);
+        
+        Queue<DFAState> queue = new LinkedList<>();
+        queue.add(dfa.startState);
+        
+        while (!queue.isEmpty()) {
+            DFAState current = queue.poll();
+            
+            // Consider all possible input characters
+            for (char c = 0; c < 128; c++) {
+                Set<State> moved = move(current.nfaStates, c);
+                if (moved.isEmpty()) continue;
+                
+                Set<State> closure = epsilonClosure(moved);
+                DFAState existing = findExistingState(dfa.states, closure);
+                
+                if (existing == null) {
+                    existing = new DFAState(closure);
+                    dfa.states.add(existing);
+                    queue.add(existing);
+                }
+                
+                current.transitions.put(c, existing);
+            }
+        }
+        return dfa;
+    }
+
+    public List<Token> tokenize() {
+        List<Token> tokens = new ArrayList<>();
+        while (pos < input.length()) {
+            if (inMultiLineComment) {
+                skipMultiLineComment();
+                continue;
+            }
+            
+            Token token = nextToken();
+            if (token != null) {
+                tokens.add(token);
+                
+                // Update symbol table
+                switch (token.getType()) {
+                    case IDENTIFIER:
+                        symbolTable.addEntry(token.getValue(), "identifier", "local");
+                        break;
+                    case INTEGER:
+                        symbolTable.addEntry(token.getValue(), "integer", "local");
+                        break;
+                    case DECIMAL:
+                        symbolTable.addEntry(token.getValue(), "decimal", "local");
+                        break;
+                }
+            }
+        }
+        return tokens;
+    }
+
+    private int findClosingBracket(String pattern, int start) {
+        int count = 1;
+        for (int i = start + 1; i < pattern.length(); i++) {
+            if (pattern.charAt(i) == '[') count++;
+            if (pattern.charAt(i) == ']') count--;
+            if (count == 0) return i;
+        }
+        return -1;
+    }
+
+    private Token nextToken() {
+        while (pos < input.length()) {
+            // Skip whitespace
+            while (pos < input.length() && Character.isWhitespace(input.charAt(pos))) {
+                if (input.charAt(pos) == '\n') line++;
+                pos++;
+            }
+            
+            if (pos >= input.length()) break;
+            
+            // Handle multi-line comments
+            if (pos + 1 < input.length() && input.substring(pos, pos + 2).equals("%*")) {
+                inMultiLineComment = true;
+                pos += 2;
+                skipMultiLineComment();
+                continue;
+            }
+
+            int start = pos;
+            DFAState current = dfa.startState;
+            DFAState lastAcceptState = null;
+            int lastAcceptPos = -1;
+            
+            while (pos < input.length()) {
+                char c = input.charAt(pos);
+                DFAState next = current.transitions.get(c);
+                
+                if (next == null) break;
+                
+                current = next;
+                pos++;
+                
+                if (current.tokenType != null) {
+                    lastAcceptState = current;
+                    lastAcceptPos = pos;
+                }
+            }
+            
+            if (lastAcceptState != null) {
+                String lexeme = input.substring(start, lastAcceptPos);
+                pos = lastAcceptPos;
+                
+                // Skip whitespace tokens
+                if (lastAcceptState.tokenType.equals("WHITESPACE")) continue;
+                
+                // Check for keywords
+                if (lastAcceptState.tokenType.equals("IDENTIFIER") && isKeyword(lexeme)) {
+                    return new Token(Token.TokenType.KEYWORD, lexeme, line);
+                }
+                
+                return new Token(Token.TokenType.valueOf(lastAcceptState.tokenType), lexeme, line);
+            }
+            
+            // Handle unrecognized characters
+            errorHandler.logError(line, "Invalid character: '" + input.charAt(pos) + "'");
+            pos++;
+        }
+        
+        return null;
+    }
+
+    private boolean isKeyword(String lexeme) {
+        return lexeme.matches("int|dec|bln|char|mrWorld|mrArea");
+    }
+
+    private Set<State> epsilonClosure(Set<State> states) {
+        Set<State> closure = new HashSet<>(states);
+        Stack<State> stack = new Stack<>();
+        states.forEach(stack::push);
+
+        while (!stack.isEmpty()) {
+            State current = stack.pop();
+            Set<State> epsilonTransitions = current.transitions.getOrDefault((char) 0, Collections.emptySet());
+            
+            for (State next : epsilonTransitions) {
+                if (closure.add(next)) {
+                    stack.push(next);
+                }
+            }
+        }
+        return closure;
+    }
+
+    private Set<State> move(Set<State> states, char symbol) {
+        Set<State> result = new HashSet<>();
+        for (State state : states) {
+            Set<State> transitions = state.transitions.getOrDefault(symbol, Collections.emptySet());
+            result.addAll(transitions);
+        }
+        return result;
+    }
+
+    private DFAState findExistingState(List<DFAState> states, Set<State> nfaStates) {
+        for (DFAState state : states) {
+            if (state.nfaStates.equals(nfaStates)) {
+                return state;
+            }
+        }
+        return null;
+    }
+
+    private void skipMultiLineComment() {
+        while (pos < input.length() - 1) {
+            if (input.charAt(pos) == '*' && input.charAt(pos + 1) == '%') {
+                pos += 2;
+                inMultiLineComment = false;
+                return;
+            }
+            if (input.charAt(pos) == '\n') {
+                line++;
             }
             pos++;
         }
-        String number = line.substring(start, pos);
-        if (hasDecimal) {
-            tokens.add(new Token(Token.TokenType.DECIMAL, number, currentLine));
-        } else {
-            tokens.add(new Token(Token.TokenType.INTEGER, number, currentLine));
-        }
-        return pos;
-    }
-
-    private int processCharacter(String line, int pos, List<Token> tokens) {
-        if (pos + 2 >= line.length() || line.charAt(pos + 2) != '\'') {
-            errorHandler.logError(currentLine, "Invalid character literal");
-            return line.length();
-        }
-        String character = line.substring(pos, pos + 3);
-        tokens.add(new Token(Token.TokenType.CHARACTER, character, currentLine));
-        return pos + 3;
-    }
-
-    private boolean isOperator(char ch) {
-        return ch == '+' || ch == '-' || ch == '*' || ch == '/' || ch == '%' || ch == '^';
     }
 }
